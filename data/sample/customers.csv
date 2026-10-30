@@ -1,0 +1,21 @@
+customer_id,name,email,country,signup_date
+500,Customer 500,customer500@example.com,US,2026-01-01
+501,Customer 501,customer501@example.com,CA,2026-02-02
+502,Customer 502,customer502@example.com,GB,2026-03-03
+503,Customer 503,customer503@example.com,DE,2026-04-04
+504,Customer 504,customer504@example.com,US,2026-05-05
+505,Customer 505,customer505@example.com,CA,2026-06-06
+506,Customer 506,customer506@example.com,GB,2026-07-07
+507,Customer 507,customer507@example.com,DE,2026-08-08
+508,Customer 508,customer508@example.com,US,2026-09-09
+509,Customer 509,customer509@example.com,CA,2026-01-10
+510,Customer 510,customer510@example.com,GB,2026-02-11
+511,Customer 511,customer511@example.com,DE,2026-03-12
+512,Customer 512,customer512@example.com,US,2026-04-13
+513,Customer 513,customer513@example.com,CA,2026-05-14
+514,Customer 514,customer514@example.com,GB,2026-06-15
+515,Customer 515,customer515@example.com,DE,2026-07-16
+516,Customer 516,customer516@example.com,US,2026-08-17
+517,Customer 517,customer517@example.com,CA,2026-09-18
+518,Customer 518,customer518@example.com,GB,2026-01-19
+519,Customer 519,customer519@example.com,DE,2026-02-20

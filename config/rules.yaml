@@ -1,0 +1,150 @@
+# Data quality checks. Edit this file to add a source or a check.
+# Paths are relative to the process working directory (the project root locally,
+# /app inside Docker). Rule changes are picked up on the next run. A schedule
+# change needs a process restart.
+#
+# A check fails when the measured rate is greater than its max_* limit.
+# A value equal to the limit still passes.
+
+schedule:
+  interval_minutes: 60
+  # Set interval_seconds to override interval_minutes, for example while demos run.
+  # interval_seconds: 30
+  run_on_startup: true
+
+storage:
+  # Override without editing this file: DQ_DATABASE_URL=sqlite:///data/other.db
+  url: sqlite:///data/monitor.db
+
+logging:
+  # Override with LOG_LEVEL. One of DEBUG, INFO, WARNING, ERROR, CRITICAL.
+  level: INFO
+
+alerting:
+  # Console alerts are WARNING lines on stdout. Email and webhook are optional.
+  console: true
+  on_statuses:
+    - fail
+    - error
+  email:
+    enabled: false
+    smtp_host: localhost
+    smtp_port: 587
+    username: ""
+    password_env: DQ_SMTP_PASSWORD
+    from_addr: dq-monitor@localhost
+    to_addrs: []
+    use_tls: true
+    use_ssl: false
+  webhook:
+    enabled: false
+    url: ""
+    timeout_seconds: 10
+    headers: {}
+    # Set bearer_token_env to DQ_WEBHOOK_TOKEN and export that variable to send a bearer token.
+    bearer_token_env: ""
+
+sources:
+  - name: orders
+    type: csv_folder
+    path: data/sample
+    pattern: "orders*.csv"
+    mode: concat
+    encoding: utf-8
+  - name: customers
+    type: csv_folder
+    path: data/sample
+    pattern: "customers*.csv"
+    mode: concat
+    encoding: utf-8
+  # SQLite source shape:
+  # - name: warehouse_orders
+  #   type: sqlite
+  #   url: sqlite:///data/warehouse.db
+  #   table: orders
+
+rules:
+  # Append a check here. name must be unique. type is one of:
+  # null_rate, row_count_drop, duplicate_spike, statistical_outliers, schema_consistency.
+  # Set enabled: false to keep a check in the file without running it.
+
+  - name: orders_null_rate
+    type: null_rate
+    source: orders
+    max_null_rate: 0.05
+    treat_blank_as_null: true
+    columns:
+      - order_id
+      - customer_id
+      - amount
+      - status
+      - order_date
+      - region
+
+  - name: orders_row_count
+    type: row_count_drop
+    source: orders
+    min_rows: 10
+    max_drop_ratio: 0.3
+
+  - name: orders_duplicate_spike
+    type: duplicate_spike
+    source: orders
+    key_columns:
+      - order_id
+    max_duplicate_rate: 0.02
+
+  - name: orders_amount_outliers
+    type: statistical_outliers
+    source: orders
+    column: amount
+    method: iqr
+    iqr_multiplier: 1.5
+    max_outlier_rate: 0.05
+
+  - name: orders_schema
+    type: schema_consistency
+    source: orders
+    allow_extra: true
+    case_sensitive: true
+    expected_columns:
+      - order_id
+      - customer_id
+      - amount
+      - status
+      - order_date
+      - region
+
+  - name: customers_null_rate
+    type: null_rate
+    source: customers
+    max_null_rate: 0.0
+    columns:
+      - customer_id
+      - name
+      - email
+      - country
+      - signup_date
+
+  - name: customers_row_count
+    type: row_count_drop
+    source: customers
+    min_rows: 5
+    max_drop_ratio: 0.3
+
+  - name: customers_duplicate_spike
+    type: duplicate_spike
+    source: customers
+    key_columns:
+      - customer_id
+    max_duplicate_rate: 0.0
+
+  - name: customers_schema
+    type: schema_consistency
+    source: customers
+    expected_columns:
+      - customer_id
+      - name
+      - email
+      - country
+      - signup_date

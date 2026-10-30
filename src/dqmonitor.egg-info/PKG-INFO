@@ -1,0 +1,398 @@
+Metadata-Version: 2.4
+Name: dqmonitor
+Version: 1.0.0
+Summary: Scheduled data quality checks, stored results, and alerts.
+Requires-Python: >=3.11
+Description-Content-Type: text/markdown
+Requires-Dist: fastapi>=0.115.0
+Requires-Dist: uvicorn>=0.32.0
+Requires-Dist: sqlalchemy>=2.0.30
+Requires-Dist: apscheduler<4,>=3.10.4
+Requires-Dist: pandas>=2.2.0
+Requires-Dist: pyyaml>=6.0.1
+Requires-Dist: httpx>=0.27.0
+Requires-Dist: jinja2>=3.1.4
+Requires-Dist: pydantic>=2.7.0
+Provides-Extra: dev
+Requires-Dist: pytest>=8.0.0; extra == "dev"
+
+# Data Quality Monitoring & Alerting System
+
+A Python service that reads data from CSV folders or SQLite, runs scheduled quality checks, stores every result, and alerts when a check fails. A small FastAPI app exposes the latest status, the history, and an HTML dashboard.
+
+Checks run once when the process starts, then on a schedule. The default schedule is every 60 minutes.
+
+## What it checks
+
+| Rule type | What it watches |
+| --- | --- |
+| `null_rate` | Missing values, including blank text when enabled |
+| `row_count_drop` | Row count below a minimum, or a drop versus the previous run |
+| `duplicate_spike` | Extra copies of a key |
+| `statistical_outliers` | Numeric outliers by IQR or z-score |
+| `schema_consistency` | Expected columns on the dataset and on each input file |
+
+A rate check fails when the measured rate is **greater than** its limit. A value equal to the limit passes.
+
+`error` means the check could not run (the file is missing, the column is not numeric, the rule raised). `fail` means the data broke a rule. `pass` means the rule held.
+
+## How a run works
+
+```text
+CSV folder or SQLite
+        |
+        v
+APScheduler  --->  rule engine  --->  check_results table (SQLite)
+                        |
+                        +--> console log, optional email, optional webhook
+                        |
+                        v
+                  FastAPI + dashboard
+```
+
+Each run reads the sources again, so a new CSV dropped into a watched folder is included on the next run. Results from one run share a timestamp. The row-count rule uses the previous stored `row_count` for that rule as its baseline. The first run records the baseline and does not treat the lack of history as a drop.
+
+Rule and source edits in the YAML are reloaded on the next run. Changing the schedule or the monitoring database URL needs a restart.
+
+## Project layout
+
+```text
+config/rules.yaml          Checks, sources, schedule, alerts
+data/sample/               Sample orders and customers CSV files
+src/dqmonitor/
+  rules/                   One module per check type
+  sources.py               CSV folder and SQLite readers
+  engine.py                One check run
+  scheduler.py             APScheduler interval
+  storage.py               SQLAlchemy check_results table
+  alerting.py              Console, email, webhook
+  api/                     FastAPI routes and the dashboard
+  cli.py                   serve and run-once
+tests/                     Pytest suite, including one file per rule
+```
+
+## Requirements
+
+- Python 3.11 or newer for a local install
+- Docker, if you want the one-command service
+
+## Run locally
+
+From the project root:
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt -r requirements-dev.txt
+pip install -e .
+pytest
+python -m dqmonitor run-once
+python -m dqmonitor serve
+```
+
+`run-once` prints a line per check and exits:
+
+- `0` when every check passed
+- `1` when at least one check failed and none errored
+- `2` when configuration is invalid or any check errored
+
+Then open the dashboard at <http://127.0.0.1:8000/>. The API docs are at <http://127.0.0.1:8000/docs>.
+
+Useful options:
+
+```bash
+python -m dqmonitor serve --host 0.0.0.0 --port 8000
+python -m dqmonitor run-once --config config/rules.yaml
+```
+
+`DQ_CONFIG` overrides the config path. `HOST` and `PORT` override the bind address.
+
+Paths inside the YAML are relative to the working directory. Run the commands above from the project root so `data/sample` and `sqlite:///data/monitor.db` resolve correctly.
+
+## Run with Docker
+
+```bash
+docker compose up --build -d
+docker compose logs -f
+```
+
+The service listens on port 8000 and restarts unless you stop it. Stop it with:
+
+```bash
+docker compose down
+```
+
+Compose mounts `./config` and `./data`. Drop a new `orders*.csv` or `customers*.csv` into `data/sample` and it is picked up on the next run. The monitoring database is `data/monitor.db` on the host.
+
+`docker compose up` is enough for a continuous monitor. The image also runs the same command directly:
+
+```bash
+docker build -t dqmonitor .
+docker run --rm -p 8000:8000 -v "$(pwd)/data:/app/data" -v "$(pwd)/config:/app/config:ro" dqmonitor
+```
+
+## Configuration
+
+`config/rules.yaml` is the control file. The sample watches two CSV sources:
+
+- `data/sample/orders*.csv`
+- `data/sample/customers*.csv`
+
+`mode: concat` reads every matching file. `mode: latest` reads only the newest match. A `path` that points at one CSV file reads that file.
+
+SQLite source:
+
+```yaml
+sources:
+  - name: warehouse_orders
+    type: sqlite
+    url: sqlite:///data/warehouse.db
+    table: orders
+```
+
+The table name must be a plain identifier (`orders`, `fact_orders`). The database file must already exist.
+
+Schedule:
+
+```yaml
+schedule:
+  interval_minutes: 60
+  # interval_seconds: 30   # overrides minutes when set
+  run_on_startup: true
+```
+
+Environment variables:
+
+| Variable | Effect |
+| --- | --- |
+| `DQ_CONFIG` | Config file path |
+| `DQ_DATABASE_URL` | Monitoring database URL, overriding `storage.url` |
+| `LOG_LEVEL` | `DEBUG`, `INFO`, `WARNING`, `ERROR`, or `CRITICAL` |
+| `DQ_SMTP_PASSWORD` | SMTP password when email uses a username |
+| `DQ_WEBHOOK_TOKEN` | Bearer token when `bearer_token_env` points at it |
+| `HOST`, `PORT` | Bind address for `serve` |
+
+## Add a check without changing code
+
+Append a rule that uses an existing type. Names must be unique. `source` must match a source name.
+
+```yaml
+rules:
+  - name: orders_status_nulls
+    type: null_rate
+    source: orders
+    max_null_rate: 0.0
+    columns:
+      - status
+```
+
+Set `enabled: false` to keep a check in the file without running it. The next run picks the new check up. Restart only when you change `schedule` or the monitoring database URL.
+
+### Rule parameters
+
+`null_rate`
+
+- `max_null_rate` (required): fraction from 0 to 1
+- `columns`: columns to test. Omit it to test every column
+- `treat_blank_as_null`: default `true`. Blank and whitespace-only text counts as null
+
+`row_count_drop`
+
+- `max_drop_ratio` (required): fraction from 0 to 1. Drop ratio is `(previous - current) / previous`
+- `min_rows`: default `1`
+
+`duplicate_spike`
+
+- `key_columns` (required)
+- `max_duplicate_rate` (required)
+- Duplicate rate is `(rows - distinct keys) / rows`. Missing keys match each other
+
+`statistical_outliers`
+
+- `column` (required)
+- `max_outlier_rate` (required)
+- `method`: `iqr` (default) or `zscore`
+- `iqr_multiplier`: default `1.5`
+- `zscore_threshold`: default `3`. Z-scores use the sample standard deviation
+- The rate divides by numeric values only. Text and nulls are reported and excluded
+
+`schema_consistency`
+
+- `expected_columns` (required)
+- `allow_extra`: default `true`
+- `case_sensitive`: default `true`
+- For a CSV folder, every matched file must contain the expected columns
+
+## Add a new check type
+
+1. Create a class in `src/dqmonitor/rules/` that subclasses `BaseRule`.
+2. Set `type_name` and `allowed_params`.
+3. Validate parameters in `validate` and return a `RuleResult` from `evaluate`.
+4. Register the class in `REGISTRY` inside `src/dqmonitor/rules/__init__.py`.
+5. Use the new `type` in YAML.
+
+`allowed_params` is what makes a typo fail at startup instead of being ignored. Status must be `pass`, `fail`, or `error`.
+
+## Alerts
+
+A failing or erroring check logs a warning:
+
+```text
+WARNING [dqmonitor.alert] ALERT status=fail rule=orders_duplicate_spike source=orders summary=...
+```
+
+The engine also logs every result at INFO. Email and webhook are off in the sample config. Turn one on in `alerting`:
+
+```yaml
+alerting:
+  console: true
+  on_statuses: [fail, error]
+  email:
+    enabled: true
+    smtp_host: smtp.example.com
+    smtp_port: 587
+    username: monitor
+    password_env: DQ_SMTP_PASSWORD
+    from_addr: dq-monitor@example.com
+    to_addrs: ["oncall@example.com"]
+    use_tls: true
+    use_ssl: false
+  webhook:
+    enabled: true
+    url: https://hooks.example.com/dq
+    timeout_seconds: 10
+    bearer_token_env: DQ_WEBHOOK_TOKEN
+```
+
+Export `DQ_SMTP_PASSWORD` or `DQ_WEBHOOK_TOKEN` before starting the process. A sink that cannot deliver is logged and does not stop the other checks or the other sinks. Alerts fire on every run that still fails. There is no silence window.
+
+The webhook body matches one history record: `id`, `rule_name`, `rule_type`, `source_name`, `status`, `checked_at`, `summary`, and `details`.
+
+## Stored results
+
+Results live in the `check_results` table:
+
+| Column | Meaning |
+| --- | --- |
+| `checked_at` | UTC time of the run, stored without a timezone suffix |
+| `rule_name` | YAML name |
+| `rule_type` | Rule type |
+| `source_name` | Source name |
+| `status` | `pass`, `fail`, or `error` |
+| `summary` | One-line explanation |
+| `details` | JSON metrics (`row_count`, rates, bounds, missing columns, `duration_ms`, `dataset_rows`) |
+
+The API returns timestamps with a `+00:00` suffix. A filter timestamp without a timezone is read as UTC.
+
+## API
+
+Latest status of every enabled check. A check that has not run yet is `pending`.
+
+```bash
+curl -s http://127.0.0.1:8000/quality/status
+```
+
+```json
+{
+  "generated_at": "2026-10-30T12:00:00+00:00",
+  "overall_status": "pass",
+  "schedule": {
+    "label": "Every 60 minutes",
+    "interval_minutes": 60,
+    "interval_seconds": null,
+    "run_on_startup": true
+  },
+  "checks": [
+    {
+      "id": 1,
+      "rule_name": "orders_null_rate",
+      "rule_type": "null_rate",
+      "source_name": "orders",
+      "status": "pass",
+      "checked_at": "2026-10-30T12:00:00+00:00",
+      "summary": "All checked columns are at or below 5.0% nulls.",
+      "details": {}
+    }
+  ]
+}
+```
+
+`overall_status` is the worst current status: `fail`, then `error`, then `pending`, then `pass`. It is `unknown` when nothing is configured.
+
+History, newest first. `count` is the number of rows in this page.
+
+```bash
+curl -s "http://127.0.0.1:8000/quality/history?status=fail&limit=20"
+curl -s "http://127.0.0.1:8000/quality/history?rule_name=orders_null_rate&source=orders&since=2026-10-01T00:00:00Z"
+curl -s "http://127.0.0.1:8000/quality/history?until=2026-10-30T23:59:59+00:00&offset=0&limit=100"
+```
+
+Filters:
+
+| Parameter | Meaning |
+| --- | --- |
+| `rule_name` | Exact rule name |
+| `status` | `pass`, `fail`, or `error` |
+| `source` | Exact source name |
+| `since`, `until` | ISO 8601, inclusive |
+| `limit` | 1 to 1000, default 100 |
+| `offset` | Default 0 |
+
+An invalid filter returns HTTP 400:
+
+```json
+{"detail": "status must be one of: pass, fail, error"}
+```
+
+Run the checks immediately. Browsers are redirected back to the dashboard. Other clients receive JSON:
+
+```bash
+curl -s -X POST http://127.0.0.1:8000/quality/run
+```
+
+The dashboard at `/` shows the overall status, the current check table, the failing rules with their JSON details, and a filterable history. It refreshes every 60 seconds. **Run checks now** posts to `/quality/run`.
+
+## Tests
+
+```bash
+pytest
+```
+
+The suite covers each rule (limits, blanks, composite keys, IQR, z-score, per-file schema), source loading, storage filters, alert delivery, the scheduler interval, config errors, and the API.
+
+## See a failure
+
+The shipped CSVs pass the sample rules. This batch is missing `region`, repeats `order_id` 1001, and leaves `amount` blank:
+
+```bash
+cat > data/sample/orders_bad.csv << 'EOF'
+order_id,customer_id,amount,status,order_date
+1001,500,,completed,2026-10-01
+1001,500,10.00,completed,2026-10-01
+EOF
+python -m dqmonitor run-once
+```
+
+Expect `orders_null_rate`, `orders_duplicate_spike`, and `orders_schema` to fail, and a console `ALERT` line for each. Remove the file and run again:
+
+```bash
+rm data/sample/orders_bad.csv
+python -m dqmonitor run-once
+```
+
+The row-count rule compares with the previous run. Deleting this small file drops the count by less than the 30% limit, so that rule stays passing.
+
+## Troubleshooting
+
+- **Config error on startup.** The message names the YAML key. Unknown rule parameters, unknown types, and unknown sources are rejected before the server listens.
+- **Dashboard is empty of data.** Run from the project root, or set paths in the YAML to absolute paths. `run_on_startup: true` fills the table as the process boots.
+- **Schedule edit did nothing.** Restart the process. Rule edits do not need a restart.
+- **SQLite is locked.** The store uses WAL mode and a 30 second busy timeout. Keep a single monitor process pointed at a given `monitor.db`.
+- **Email or webhook did not send.** The channel must be `enabled: true`, and the password or bearer environment variable must be set. Delivery errors are logged and the check result is still stored.
+- **Docker cannot write `data/monitor.db`.** The compose file mounts `./data`. The directory needs to be writable by the container.
+
+## Sample data
+
+`data/sample/orders.csv` has 48 orders. One `region` is blank and one `amount` is an outlier; both are under the 5% limits. `order_id` values are unique. `data/sample/customers.csv` has 20 customers with no missing fields.
+
+Logging goes to stdout. A passing check is INFO. An alert is WARNING.

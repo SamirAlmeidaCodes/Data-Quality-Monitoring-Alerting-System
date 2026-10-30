@@ -1,0 +1,309 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="refresh" content="60">
+  <title>Data Quality Monitor</title>
+  <style>
+    :root {
+      --bg: #f3f5f8;
+      --ink: #172033;
+      --muted: #5c6b7e;
+      --line: #d8e0ea;
+      --card: #ffffff;
+      --header: #122033;
+      --header-ink: #f7f8fb;
+      --pass: #0d7a45;
+      --pass-bg: #e6f6ee;
+      --fail: #b42318;
+      --fail-bg: #fdeceb;
+      --error: #9a6700;
+      --error-bg: #fff6e0;
+      --pending: #465264;
+      --pending-bg: #eef1f5;
+      --unknown: #465264;
+      --unknown-bg: #eef1f5;
+      --accent: #1f6feb;
+      --shadow: 0 1px 2px rgba(18, 32, 51, 0.06);
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--ink);
+      font: 15px/1.5 "Segoe UI", system-ui, sans-serif;
+    }
+    a { color: var(--accent); }
+    h1, h2, p { margin: 0; }
+    h1 { font-size: 28px; letter-spacing: -0.03em; }
+    h2 { font-size: 18px; margin-bottom: 12px; }
+    .wrap { width: min(1120px, calc(100% - 32px)); margin: 0 auto; }
+    header {
+      background: var(--header);
+      color: var(--header-ink);
+      padding: 28px 0;
+    }
+    .header-row, .banner, .filters {
+      display: flex;
+      justify-content: space-between;
+      gap: 20px;
+      align-items: flex-end;
+    }
+    .eyebrow {
+      text-transform: uppercase;
+      letter-spacing: 0.12em;
+      font-size: 12px;
+      color: #9eb0c6;
+      margin-bottom: 4px;
+    }
+    .sub { color: #c5d0de; margin-top: 6px; }
+    .header-actions { display: flex; gap: 16px; align-items: center; }
+    .header-actions a { color: #d5e4ff; }
+    button, .button {
+      background: var(--accent);
+      color: white;
+      border: 0;
+      border-radius: 8px;
+      padding: 10px 14px;
+      font: inherit;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    button.secondary, .button.secondary {
+      background: white;
+      color: var(--ink);
+      border: 1px solid var(--line);
+    }
+    main { padding: 24px 0 48px; display: grid; gap: 22px; }
+    .banner, .card, .table-card {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      box-shadow: var(--shadow);
+    }
+    .banner { padding: 18px 20px; align-items: center; border-left: 6px solid var(--pending); }
+    .banner-pass { border-left-color: var(--pass); }
+    .banner-fail { border-left-color: var(--fail); }
+    .banner-error { border-left-color: var(--error); }
+    .banner-pending, .banner-unknown { border-left-color: var(--pending); }
+    .kicker { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em; }
+    .banner-status { font-size: 28px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; }
+    .banner dl { display: flex; gap: 28px; margin: 0; }
+    .banner dt { color: var(--muted); font-size: 12px; }
+    .banner dd { margin: 0; font-variant-numeric: tabular-nums; }
+    .table-card { overflow: auto; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { text-align: left; padding: 12px 14px; border-bottom: 1px solid var(--line); vertical-align: top; }
+    th { font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); background: #f8fafc; }
+    tr:last-child td { border-bottom: 0; }
+    tbody tr.status-fail { box-shadow: inset 3px 0 0 var(--fail); }
+    tbody tr.status-error { box-shadow: inset 3px 0 0 var(--error); }
+    .summary { max-width: 460px; }
+    .pill {
+      display: inline-block;
+      border-radius: 999px;
+      padding: 2px 8px;
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+    .pill-pass { color: var(--pass); background: var(--pass-bg); }
+    .pill-fail { color: var(--fail); background: var(--fail-bg); }
+    .pill-error { color: var(--error); background: var(--error-bg); }
+    .pill-pending, .pill-unknown { color: var(--pending); background: var(--pending-bg); }
+    .alert-card {
+      border: 1px solid var(--line);
+      border-left: 6px solid var(--fail);
+      background: white;
+      border-radius: 14px;
+      padding: 14px 16px;
+      margin-bottom: 12px;
+    }
+    .alert-card.error, .alert-error { border-left-color: var(--error); }
+    .alert-head { display: flex; justify-content: space-between; gap: 12px; align-items: baseline; }
+    .alert-head h3 { margin: 0; font-size: 16px; }
+    .meta { color: var(--muted); font-size: 13px; margin: 4px 0 8px; }
+    pre {
+      margin: 0;
+      max-height: 220px;
+      overflow: auto;
+      background: #f8fafc;
+      border-radius: 8px;
+      padding: 12px;
+      font-size: 12px;
+      line-height: 1.45;
+    }
+    .empty { color: var(--muted); background: white; border: 1px dashed var(--line); border-radius: 12px; padding: 16px; }
+    .filters { align-items: end; flex-wrap: wrap; margin-bottom: 12px; }
+    label { display: grid; gap: 4px; color: var(--muted); font-size: 12px; font-weight: 650; }
+    input, select {
+      font: inherit;
+      color: var(--ink);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 8px 10px;
+      background: white;
+      min-width: 140px;
+    }
+    .error-banner { background: var(--fail-bg); color: var(--fail); border-radius: 8px; padding: 10px 12px; margin-bottom: 12px; }
+    footer { color: var(--muted); padding: 0 0 32px; font-size: 13px; }
+    footer .wrap { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+    @media (max-width: 720px) {
+      .header-row, .banner, .banner dl, footer .wrap { flex-direction: column; align-items: flex-start; }
+      h1 { font-size: 24px; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="wrap header-row">
+      <div>
+        <p class="eyebrow">Data quality</p>
+        <h1>Monitor</h1>
+        <p class="sub">{{ source_line }} · {{ schedule_label }}</p>
+      </div>
+      <div class="header-actions">
+        <form method="post" action="/quality/run">
+          <button type="submit">Run checks now</button>
+        </form>
+        <a href="/docs">API docs</a>
+      </div>
+    </div>
+  </header>
+  <main class="wrap">
+    <section class="banner banner-{{ overall_status }}" id="overall">
+      <div>
+        <p class="kicker">Overall</p>
+        <p class="banner-status">{{ overall_status }}</p>
+        <p>{{ overall_message }}</p>
+      </div>
+      <dl>
+        <div>
+          <dt>Last run</dt>
+          <dd>{{ last_run }}</dd>
+        </div>
+        <div>
+          <dt>Page generated</dt>
+          <dd>{{ generated_at }}</dd>
+        </div>
+      </dl>
+    </section>
+
+    <section id="current-status">
+      <h2>Current status</h2>
+      {% if checks %}
+      <div class="table-card">
+        <table>
+          <thead>
+            <tr>
+              <th>Rule</th>
+              <th>Type</th>
+              <th>Source</th>
+              <th>Status</th>
+              <th>Checked</th>
+              <th>Summary</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for check in checks %}
+            <tr class="status-{{ check.status }}">
+              <td>{{ check.rule_name }}</td>
+              <td>{{ check.rule_type }}</td>
+              <td>{{ check.source_name }}</td>
+              <td><span class="pill pill-{{ check.status }}">{{ check.status }}</span></td>
+              <td>{{ check.checked_at | display_ts }}</td>
+              <td class="summary">{{ check.summary }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      {% else %}
+      <p class="empty">No checks are configured.</p>
+      {% endif %}
+    </section>
+
+    <section id="failing">
+      <h2>Needs attention</h2>
+      {% if failing %}
+        {% for check in failing %}
+        <article class="alert-card alert-{{ check.status }}">
+          <div class="alert-head">
+            <h3>{{ check.rule_name }}</h3>
+            <span class="pill pill-{{ check.status }}">{{ check.status }}</span>
+          </div>
+          <p class="meta">{{ check.rule_type }} · {{ check.source_name }} · {{ check.checked_at | display_ts }}</p>
+          <p>{{ check.summary }}</p>
+          <pre>{{ check.details | pretty_json }}</pre>
+        </article>
+        {% endfor %}
+      {% else %}
+      <p class="empty">{{ attention_message }}</p>
+      {% endif %}
+    </section>
+
+    <section id="history">
+      <h2>History</h2>
+      <form class="filters" method="get" action="/">
+        <label>Rule
+          <input name="rule_name" value="{{ filters.rule_name }}" placeholder="orders_null_rate">
+        </label>
+        <label>Status
+          <select name="status">
+            <option value="" {% if not filters.status %}selected{% endif %}>Any</option>
+            {% for value in ["pass", "fail", "error"] %}
+            <option value="{{ value }}" {% if filters.status == value %}selected{% endif %}>{{ value }}</option>
+            {% endfor %}
+          </select>
+        </label>
+        <label>Source
+          <input name="source" value="{{ filters.source }}" placeholder="orders">
+        </label>
+        <label>Limit
+          <input name="limit" type="number" min="1" max="1000" value="{{ filters.limit }}">
+        </label>
+        <button class="secondary" type="submit">Filter</button>
+      </form>
+      {% if filter_error %}
+      <p class="error-banner">{{ filter_error }}</p>
+      {% endif %}
+      {% if history %}
+      <div class="table-card">
+        <table>
+          <thead>
+            <tr>
+              <th>Checked</th>
+              <th>Rule</th>
+              <th>Source</th>
+              <th>Status</th>
+              <th>Summary</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for check in history %}
+            <tr class="status-{{ check.status }}">
+              <td>{{ check.checked_at | display_ts }}</td>
+              <td>{{ check.rule_name }}</td>
+              <td>{{ check.source_name }}</td>
+              <td><span class="pill pill-{{ check.status }}">{{ check.status }}</span></td>
+              <td class="summary">{{ check.summary }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      {% else %}
+      <p class="empty">No results match these filters.</p>
+      {% endif %}
+    </section>
+  </main>
+  <footer>
+    <div class="wrap">
+      <span>dqmonitor {{ version }}. Results are stored in the check_results table.</span>
+      <span><a href="/quality/status">Status JSON</a> · <a href="/quality/history">History JSON</a> · This page refreshes every 60 seconds.</span>
+    </div>
+  </footer>
+</body>
+</html>
