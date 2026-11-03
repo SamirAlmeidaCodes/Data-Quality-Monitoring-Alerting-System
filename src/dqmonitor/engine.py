@@ -37,27 +37,32 @@ class RunReport:
 
 
 class CheckEngine:
-    """Reload YAML on each run, then execute the checks.
+    """Reload YAML when the config file changes, then execute the checks.
 
     Rule and source edits apply on the next run. The database URL and the
-    schedule interval stay fixed until the process restarts.
+    schedule interval stay fixed until the process restarts. A parsed config
+    is reused until the file's modification time or size changes.
     """
 
     def __init__(self, config_path: Path, store: Store) -> None:
         self.config_path = Path(config_path)
         self.store = store
         self._lock = threading.Lock()
-        self._cache: tuple[CompiledConfig, AlertRouter] | None = None
+        self._snapshot: tuple[tuple[int, int] | None, CompiledConfig, AlertRouter] | None = None
         self._reload_error: str | None = None
         self._storage_warning_emitted = False
 
     def load(self) -> tuple[CompiledConfig, AlertRouter]:
+        stamp = _config_stamp(self.config_path)
+        snapshot = self._snapshot
+        if snapshot is not None and stamp is not None and snapshot[0] == stamp:
+            return snapshot[1], snapshot[2]
         try:
             compiled = load_application(self.config_path)
             self._warn_if_storage_changed(compiled)
             fresh = (compiled, build_alerter(compiled.settings.alerting))
         except Exception as exc:
-            if self._cache is None:
+            if snapshot is None:
                 raise
             message = str(exc)
             if message != self._reload_error:
@@ -65,9 +70,11 @@ class CheckEngine:
                     "Configuration reload failed; using the last valid configuration"
                 )
                 self._reload_error = message
-            return self._cache
+            return snapshot[1], snapshot[2]
         self._reload_error = None
-        self._cache = fresh
+        after = _config_stamp(self.config_path)
+        # A stamp that moved during the read is not cached, so the next call reloads.
+        self._snapshot = (after if after == stamp else None, fresh[0], fresh[1])
         return fresh
 
     def run(self) -> RunReport:
@@ -87,7 +94,7 @@ class CheckEngine:
 
 
 def execute_run(compiled: CompiledConfig, store: Store, alerter: AlertRouter) -> RunReport:
-    """Evaluate the already-built rules and persist every result."""
+    """Evaluate the already-built rules and persist every result in one commit."""
 
     started = utcnow()
     loaded: dict[str, pd.DataFrame | Exception] = {}
@@ -101,22 +108,33 @@ def execute_run(compiled: CompiledConfig, store: Store, alerter: AlertRouter) ->
             logger.exception("Source %s could not be read", source.name)
             loaded[source.name] = exc
 
-    results: list[StoredCheck] = []
+    enabled = []
     for rule in compiled.rules:
         if not rule.enabled:
             logger.info("Skipping disabled rule %s", rule.name)
             continue
-        outcome = _evaluate_rule(rule, loaded.get(rule.source), store)
-        stored = store.save(
-            checked_at=started,
-            rule_name=rule.name,
-            rule_type=rule.type_name,
-            source_name=rule.source,
-            status=outcome.status,
-            summary=outcome.summary,
-            details=outcome.details,
-        )
-        results.append(stored)
+        enabled.append(rule)
+
+    previous = store.latest_for_rules([rule.name for rule in enabled])
+    outcomes = [
+        (rule, _evaluate_rule(rule, loaded.get(rule.source), previous.get(rule.name)))
+        for rule in enabled
+    ]
+    results = store.save_many(
+        [
+            {
+                "checked_at": started,
+                "rule_name": rule.name,
+                "rule_type": rule.type_name,
+                "source_name": rule.source,
+                "status": outcome.status,
+                "summary": outcome.summary,
+                "details": outcome.details,
+            }
+            for rule, outcome in outcomes
+        ]
+    )
+    for stored in results:
         logger.info(
             "Check %s status=%s source=%s summary=%s",
             stored.rule_name,
@@ -138,7 +156,21 @@ def execute_run(compiled: CompiledConfig, store: Store, alerter: AlertRouter) ->
     return RunReport(started_at=started, finished_at=finished, results=results)
 
 
-def _evaluate_rule(rule, loaded: pd.DataFrame | Exception | None, store: Store) -> RuleResult:
+def _config_stamp(path: Path) -> tuple[int, int] | None:
+    """Modification time and size, or None when the file cannot be stated."""
+
+    try:
+        stat = path.stat()
+    except OSError:
+        return None
+    return (stat.st_mtime_ns, stat.st_size)
+
+
+def _evaluate_rule(
+    rule,
+    loaded: pd.DataFrame | Exception | None,
+    previous: StoredCheck | None,
+) -> RuleResult:
     started = time.perf_counter()
     frame: pd.DataFrame | None = None
     if loaded is None:
@@ -155,7 +187,6 @@ def _evaluate_rule(rule, loaded: pd.DataFrame | Exception | None, store: Store) 
         )
     else:
         frame = loaded
-        previous = store.latest_by_rule(rule.name)
         meta = frame.attrs.get("dq_meta") or {}
         context = EvaluationContext(
             source_name=rule.source,

@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import create_engine, event, select
+from sqlalchemy import create_engine, event, func, select
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import sessionmaker
 
@@ -88,33 +88,81 @@ class Store:
         summary: str,
         details: dict[str, Any],
     ) -> StoredCheck:
-        if status not in {"pass", "fail", "error"}:
-            raise ValueError(f"Invalid status '{status}'")
-        row = CheckResultRow(
-            checked_at=checked_at,
-            rule_name=rule_name,
-            rule_type=rule_type,
-            source_name=source_name,
-            status=status,
-            summary=summary,
-            details=json_safe(details),
-        )
+        return self.save_many(
+            [
+                {
+                    "checked_at": checked_at,
+                    "rule_name": rule_name,
+                    "rule_type": rule_type,
+                    "source_name": source_name,
+                    "status": status,
+                    "summary": summary,
+                    "details": details,
+                }
+            ]
+        )[0]
+
+    def save_many(self, checks: list[dict[str, Any]]) -> list[StoredCheck]:
+        """Insert every result from one run and commit once."""
+
+        if not checks:
+            return []
+        rows: list[CheckResultRow] = []
+        for check in checks:
+            status = check["status"]
+            if status not in {"pass", "fail", "error"}:
+                raise ValueError(f"Invalid status '{status}'")
+            rows.append(
+                CheckResultRow(
+                    checked_at=check["checked_at"],
+                    rule_name=check["rule_name"],
+                    rule_type=check["rule_type"],
+                    source_name=check["source_name"],
+                    status=status,
+                    summary=check["summary"],
+                    details=json_safe(check["details"]),
+                )
+            )
         with self.Session() as session:
-            session.add(row)
+            session.add_all(rows)
             session.commit()
-            session.refresh(row)
-            return _to_stored(row)
+            return [_to_stored(row) for row in rows]
 
     def latest_by_rule(self, rule_name: str) -> StoredCheck | None:
-        stmt = (
-            select(CheckResultRow)
-            .where(CheckResultRow.rule_name == rule_name)
-            .order_by(CheckResultRow.checked_at.desc(), CheckResultRow.id.desc())
-            .limit(1)
+        return self.latest_for_rules([rule_name]).get(rule_name)
+
+    def latest_for_rules(self, rule_names: list[str]) -> dict[str, StoredCheck]:
+        """Latest stored result for each rule, using one query.
+
+        Ordering matches ``checked_at`` descending, then ``id`` descending,
+        so a later row with an older timestamp does not hide a newer one.
+        """
+
+        if not rule_names:
+            return {}
+        ranked = (
+            select(
+                CheckResultRow.id.label("id"),
+                func.row_number()
+                .over(
+                    partition_by=CheckResultRow.rule_name,
+                    order_by=[
+                        CheckResultRow.checked_at.desc(),
+                        CheckResultRow.id.desc(),
+                    ],
+                )
+                .label("rank"),
+            )
+            .where(CheckResultRow.rule_name.in_(rule_names))
+            .subquery()
+        )
+        stmt = select(CheckResultRow).join(ranked, CheckResultRow.id == ranked.c.id).where(
+            ranked.c.rank == 1
         )
         with self.Session() as session:
-            row = session.scalar(stmt)
-            return _to_stored(row) if row is not None else None
+            return {
+                row.rule_name: _to_stored(row) for row in session.scalars(stmt).all()
+            }
 
     def history(
         self,

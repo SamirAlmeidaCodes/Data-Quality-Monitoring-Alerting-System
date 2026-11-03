@@ -54,7 +54,8 @@ class DuplicateSpikeRule(BaseRule):
                 },
             )
 
-        unique_keys = int(df.drop_duplicates(subset=self.key_columns).shape[0])
+        # Count distinct keys without copying the other columns.
+        unique_keys = int(len(df) - df.duplicated(subset=self.key_columns).sum())
         duplicate_rows = int(len(df) - unique_keys)
         rate = round_rate(duplicate_rows / len(df))
         details = {

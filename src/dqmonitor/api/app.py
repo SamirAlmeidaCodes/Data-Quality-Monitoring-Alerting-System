@@ -285,11 +285,11 @@ def create_app(config_path: str | Path, *, start_scheduler_on_boot: bool = True)
 def _current_checks(request: Request):
     compiled, _alerter = request.app.state.engine.load()
     store: Store = request.app.state.engine.store
+    enabled = [rule for rule in compiled.rules if rule.enabled]
+    latest = store.latest_for_rules([rule.name for rule in enabled])
     checks: list[dict[str, Any]] = []
-    for rule in compiled.rules:
-        if not rule.enabled:
-            continue
-        stored = store.latest_by_rule(rule.name)
+    for rule in enabled:
+        stored = latest.get(rule.name)
         if stored is None:
             checks.append(pending_check(rule.name, rule.type_name, rule.source))
         else:

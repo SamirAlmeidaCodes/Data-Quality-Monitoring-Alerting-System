@@ -1,5 +1,6 @@
 """Fail when null or blank values exceed a configured rate."""
 
+import numpy as np
 import pandas as pd
 
 from dqmonitor.rules.base import (
@@ -24,8 +25,14 @@ def missing_mask(series: pd.Series, treat_blank_as_null: bool) -> pd.Series:
     )
     if not textual:
         return mask
-    blank = series.astype("string").str.strip().eq("").fillna(False)
-    return mask | blank.astype(bool)
+    # Strip text in place. astype("string") would copy the whole column first.
+    values = series.to_numpy(copy=False)
+    blank = np.fromiter(
+        (isinstance(value, str) and value.strip() == "" for value in values),
+        dtype=np.bool_,
+        count=len(values),
+    )
+    return pd.Series(mask.to_numpy() | blank, index=series.index)
 
 
 class NullRateRule(BaseRule):
