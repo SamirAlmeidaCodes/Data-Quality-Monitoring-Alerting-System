@@ -1,6 +1,7 @@
 """Persist and query check results."""
 
 import math
+import os
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -8,6 +9,7 @@ from typing import Any
 
 from sqlalchemy import create_engine, event, func, select
 from sqlalchemy.engine import Engine
+from sqlalchemy.engine.url import make_url
 from sqlalchemy.orm import sessionmaker
 
 from dqmonitor.models import Base, CheckResultRow
@@ -73,6 +75,7 @@ class Store:
 
     def create_tables(self) -> None:
         Base.metadata.create_all(self.engine)
+        _restrict_sqlite_permissions(self.url)
 
     def dispose(self) -> None:
         self.engine.dispose()
@@ -126,7 +129,9 @@ class Store:
         with self.Session() as session:
             session.add_all(rows)
             session.commit()
-            return [_to_stored(row) for row in rows]
+            stored = [_to_stored(row) for row in rows]
+        _restrict_sqlite_permissions(self.url)
+        return stored
 
     def latest_by_rule(self, rule_name: str) -> StoredCheck | None:
         return self.latest_for_rules([rule_name]).get(rule_name)
@@ -219,5 +224,30 @@ def _create_engine(url: str) -> Engine:
             cursor.execute("PRAGMA journal_mode=WAL")
             cursor.execute("PRAGMA busy_timeout=30000")
             cursor.close()
+            _restrict_sqlite_permissions(url)
 
     return engine
+
+
+def _restrict_sqlite_permissions(url: str) -> None:
+    """Keep a file database and its WAL sidecars readable only by the owner."""
+
+    if not url.startswith("sqlite"):
+        return
+    try:
+        parsed = make_url(url)
+    except Exception:
+        return
+    database = parsed.database
+    if not database or database == ":memory:":
+        return
+    path = Path(database)
+    if not path.is_absolute():
+        path = Path.cwd() / path
+    for candidate in (path, Path(str(path) + "-wal"), Path(str(path) + "-shm")):
+        if not candidate.is_file():
+            continue
+        try:
+            os.chmod(candidate, 0o600)
+        except OSError:
+            continue

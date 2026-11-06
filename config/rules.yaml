@@ -31,6 +31,7 @@ alerting:
     smtp_host: localhost
     smtp_port: 587
     username: ""
+    # Read from the environment. Never put the password in this file.
     password_env: DQ_SMTP_PASSWORD
     from_addr: dq-monitor@localhost
     to_addrs: []
@@ -41,7 +42,8 @@ alerting:
     url: ""
     timeout_seconds: 10
     headers: {}
-    # Set bearer_token_env to DQ_WEBHOOK_TOKEN and export that variable to send a bearer token.
+    # Set bearer_token_env to DQ_WEBHOOK_TOKEN and export that variable.
+    # Do not put the token in headers or in this file.
     bearer_token_env: ""
 
 sources:

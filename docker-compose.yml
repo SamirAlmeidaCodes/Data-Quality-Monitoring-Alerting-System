@@ -2,15 +2,28 @@ services:
   monitor:
     build: .
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     environment:
       DQ_CONFIG: /app/config/rules.yaml
+      DQ_ENV: production
       LOG_LEVEL: INFO
-      # DQ_SMTP_PASSWORD: ""
-      # DQ_WEBHOOK_TOKEN: ""
+      HOME: /tmp
+    # Optional secrets. Copy .env.example to .env. Do not put secrets here.
+    env_file:
+      - path: .env
+        required: false
     volumes:
       - ./config:/app/config:ro
       - ./data:/app/data
+    # Non-root. Export UID and GID if your account is not 1000:1000 so ./data stays writable.
+    user: "${UID:-1000}:${GID:-1000}"
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
     restart: unless-stopped
     healthcheck:
       test:

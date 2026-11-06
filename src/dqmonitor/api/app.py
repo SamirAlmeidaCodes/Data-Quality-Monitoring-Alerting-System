@@ -2,6 +2,7 @@
 
 import json
 import logging
+import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
@@ -25,6 +26,8 @@ from dqmonitor.reporting import (
 )
 from dqmonitor.scheduler import start_scheduler
 from dqmonitor.api.filters import parse_history_filters
+from dqmonitor.api.security import SecurityMiddleware, apply_security_headers
+from dqmonitor.redact import install_redaction
 from dqmonitor.storage import Store, utcnow
 
 logger = logging.getLogger("dqmonitor.api")
@@ -84,10 +87,29 @@ class HistoryResponse(BaseModel):
     results: list[CheckPayload]
 
 
+async def _unhandled_exception(request: Request, exc: Exception) -> JSONResponse:
+    """Return a generic body. The server log keeps the traceback."""
+
+    logger.exception(
+        "Unhandled error on %s %s (%s)",
+        request.method,
+        request.url.path,
+        type(exc).__name__,
+    )
+    response = JSONResponse(status_code=500, content={"detail": "Internal server error"})
+    apply_security_headers(
+        response.headers,
+        {"path": request.url.path, "scheme": request.url.scheme},
+    )
+    return response
+
+
 def create_app(config_path: str | Path, *, start_scheduler_on_boot: bool = True) -> FastAPI:
     """Build the API. The lifespan opens the database and starts the scheduler."""
 
     config_file = Path(config_path)
+    install_redaction()
+    os.umask(0o077)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -125,7 +147,10 @@ def create_app(config_path: str | Path, *, start_scheduler_on_boot: bool = True)
         summary="Scheduled data quality checks, stored results, and alerts.",
         version=__version__,
         lifespan=lifespan,
+        debug=False,
     )
+    app.add_exception_handler(Exception, _unhandled_exception)
+    app.add_middleware(SecurityMiddleware)
 
     @app.get("/", include_in_schema=False)
     def dashboard(

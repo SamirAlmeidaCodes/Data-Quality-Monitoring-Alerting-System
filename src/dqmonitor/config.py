@@ -2,6 +2,7 @@
 
 import os
 import re
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -14,6 +15,14 @@ from dqmonitor.rules import BaseRule, get_rule_class
 
 _LOG_LEVELS = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
 _TABLE_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_PRODUCTION = {"prod", "production"}
+_debug_notice_sent = False
+
+
+def is_production() -> bool:
+    """True when DQ_ENV asks for production behavior."""
+
+    return os.environ.get("DQ_ENV", "").strip().lower() in _PRODUCTION
 
 
 @dataclass
@@ -40,6 +49,9 @@ def load_application(path: str | Path) -> CompiledConfig:
 def parse_settings(path: str | Path) -> Settings:
     """Read YAML and apply environment overrides. Does not build rules."""
 
+    raw_path = os.fspath(path)
+    if any(ord(character) < 32 or ord(character) == 127 for character in raw_path):
+        raise ConfigError("Config path contains a control character")
     config_path = Path(path).expanduser()
     if not config_path.is_file():
         raise ConfigError(f"Config file not found: {config_path}")
@@ -103,15 +115,29 @@ def compile_settings(settings: Settings) -> CompiledConfig:
 
 
 def _apply_env_overrides(settings: Settings) -> None:
+    global _debug_notice_sent
     database_url = os.environ.get("DQ_DATABASE_URL")
-    if database_url:
-        settings.storage.url = database_url.strip()
+    if database_url is not None:
+        database_url = database_url.strip()
+        if not database_url:
+            raise ConfigError("DQ_DATABASE_URL is empty")
+        if any(ord(character) < 32 or ord(character) == 127 for character in database_url):
+            raise ConfigError("DQ_DATABASE_URL contains control characters")
+        settings.storage.url = database_url
     level = os.environ.get("LOG_LEVEL")
     if level:
         normalized = level.strip().upper()
         if normalized not in _LOG_LEVELS:
             raise ConfigError("LOG_LEVEL must be DEBUG, INFO, WARNING, ERROR, or CRITICAL")
         settings.logging.level = normalized
+    if is_production() and settings.logging.level == "DEBUG":
+        settings.logging.level = "INFO"
+        if not _debug_notice_sent:
+            print(
+                "DQ_ENV=production disables DEBUG logging; using INFO.",
+                file=sys.stderr,
+            )
+            _debug_notice_sent = True
 
 
 def _format_validation_error(exc: ValidationError) -> str:

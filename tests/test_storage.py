@@ -19,6 +19,16 @@ def _save(store: Store, **overrides):
     return store.save(**values)
 
 
+def test_sqlite_database_file_is_private(tmp_path):
+    path = tmp_path / "monitor.db"
+    store = Store(sqlite_file_url(path))
+    store.create_tables()
+    try:
+        assert path.stat().st_mode & 0o777 == 0o600
+    finally:
+        store.dispose()
+
+
 def test_latest_history_and_filters(tmp_path):
     store = Store(sqlite_file_url(tmp_path / "monitor.db"))
     store.create_tables()

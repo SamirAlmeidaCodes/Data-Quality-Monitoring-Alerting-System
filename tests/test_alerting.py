@@ -6,6 +6,7 @@ from datetime import datetime
 
 import httpx
 import pytest
+from pydantic import ValidationError
 
 from dqmonitor.alerting import (
     AlertRouter,
@@ -145,6 +146,11 @@ def test_enabled_email_without_recipients_is_rejected():
     )
     with pytest.raises(ConfigError, match="to_addrs"):
         validate_alerting_config(config)
+
+
+def test_webhook_rejects_credential_headers():
+    with pytest.raises(ValidationError, match="bearer_token_env"):
+        WebhookConfig(headers={"Authorization": "Bearer real-token"})
 
 
 def test_webhook_url_must_be_absolute():

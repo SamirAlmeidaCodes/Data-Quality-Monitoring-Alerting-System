@@ -2,7 +2,7 @@
 
 import logging
 import re
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 
 import pandas as pd
 from sqlalchemy import create_engine, text
@@ -31,15 +31,14 @@ def load_source(config: SourceConfig) -> pd.DataFrame:
 
 
 def _load_csv(config: CsvFolderSourceConfig) -> pd.DataFrame:
-    path = Path(config.path)
-    if not path.is_absolute():
-        path = Path.cwd() / path
+    path = _resolve_source_path(config.path)
 
     if path.is_file():
         files = [path]
         mode = "file"
     elif path.is_dir():
-        files = sorted(item for item in path.glob(config.pattern) if item.is_file())
+        _reject_escaping_pattern(config.pattern)
+        files = _files_inside(path, config.pattern)
         mode = config.mode
         if mode == "latest" and files:
             files = [max(files, key=lambda item: (item.stat().st_mtime_ns, item.name))]
@@ -74,12 +73,8 @@ def _load_csv(config: CsvFolderSourceConfig) -> pd.DataFrame:
 
 
 def _load_sqlite(config: SqliteSourceConfig) -> pd.DataFrame:
-    if not _IDENTIFIER.match(config.table):
-        raise SourceError(
-            f"Table name '{config.table}' is not a valid identifier"
-        )
     _require_sqlite_file(config.url)
-    query = text(f'SELECT * FROM "{config.table}"')
+    query = text(f"SELECT * FROM {_quote_ident(config.table)}")
     engine = create_engine(config.url)
     try:
         with engine.connect() as connection:
@@ -112,6 +107,8 @@ def _require_sqlite_file(url: str) -> None:
     missing table, leaving a stray database behind.
     """
 
+    if any(ord(character) < 32 or ord(character) == 127 for character in url):
+        raise SourceError("SQLite URL contains a control character")
     try:
         parsed = make_url(url)
     except Exception as exc:
@@ -126,3 +123,44 @@ def _require_sqlite_file(url: str) -> None:
         db_path = Path.cwd() / db_path
     if not db_path.is_file():
         raise SourceError(f"SQLite database does not exist: {db_path}")
+
+
+def _resolve_source_path(raw: str) -> Path:
+    if any(ord(character) < 32 or ord(character) == 127 for character in raw):
+        raise SourceError("Source path contains a control character")
+    path = Path(raw)
+    if not path.is_absolute():
+        path = Path.cwd() / path
+    return path.resolve()
+
+
+def _reject_escaping_pattern(pattern: str) -> None:
+    if any(ord(character) < 32 or ord(character) == 127 for character in pattern):
+        raise SourceError("CSV pattern contains a control character")
+    posix = PurePosixPath(pattern).parts
+    windows = PureWindowsPath(pattern).parts
+    if pattern.startswith(("/", "\\")) or ".." in posix or ".." in windows:
+        raise SourceError("CSV pattern must stay inside the source directory")
+
+
+def _files_inside(root: Path, pattern: str) -> list[Path]:
+    """Return matching files whose resolved path stays inside ``root``."""
+
+    directory = root.resolve()
+    matches: list[Path] = []
+    for item in directory.glob(pattern):
+        if not item.is_file():
+            continue
+        resolved = item.resolve()
+        if not resolved.is_relative_to(directory):
+            raise SourceError(
+                f"CSV file '{item.name}' resolves outside the source directory"
+            )
+        matches.append(resolved)
+    return sorted(matches)
+
+
+def _quote_ident(name: str) -> str:
+    if not _IDENTIFIER.fullmatch(name):
+        raise SourceError(f"Table name '{name}' is not a valid identifier")
+    return '"' + name.replace('"', '""') + '"'

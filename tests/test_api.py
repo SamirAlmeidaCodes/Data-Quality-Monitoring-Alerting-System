@@ -139,6 +139,41 @@ def test_cli_run_once_exit_codes(tmp_path, monkeypatch, capsys):
     assert main(["--config", str(tmp_path / "missing.yaml"), "run-once"]) == 2
 
 
+def test_security_headers_and_rate_limit(tmp_path, monkeypatch):
+    monkeypatch.setenv("DQ_RATE_LIMIT", "2")
+    config_path, _folder, _database = build_project(tmp_path, rows=HEALTHY_ROWS, rules=HEALTHY_RULES)
+    with _client(config_path) as client:
+        first = client.get("/quality/status")
+        assert first.status_code == 200
+        assert first.headers["x-content-type-options"] == "nosniff"
+        assert first.headers["x-frame-options"] == "DENY"
+        assert "frame-ancestors 'none'" in first.headers["content-security-policy"]
+        assert "access-control-allow-origin" not in first.headers
+        assert client.get("/quality/status").status_code == 200
+        blocked = client.get("/quality/status")
+        assert blocked.status_code == 429
+        assert blocked.json()["detail"] == "Too many requests"
+        assert blocked.headers["retry-after"] == "60"
+
+
+def test_unhandled_errors_hide_internal_details(tmp_path):
+    config_path, _folder, _database = build_project(tmp_path, rows=HEALTHY_ROWS, rules=HEALTHY_RULES)
+    app = create_app(config_path, start_scheduler_on_boot=False)
+
+    @app.get("/boom")
+    def boom() -> dict[str, str]:
+        raise RuntimeError("secret /tmp/hidden token=abc")
+
+    with TestClient(app, raise_server_exceptions=False) as client:
+        response = client.get("/boom")
+    assert response.status_code == 500
+    assert response.json() == {"detail": "Internal server error"}
+    body = response.text.lower()
+    assert "traceback" not in body
+    assert "hidden" not in body
+    assert "token=" not in body
+
+
 def test_parse_history_filters_treats_naive_timestamps_as_utc():
     filters = parse_history_filters(
         rule_name=" orders_null_rate ",

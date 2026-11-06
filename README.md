@@ -85,11 +85,12 @@ Then open the dashboard at <http://127.0.0.1:8000/>. The API docs are at <http:/
 Useful options:
 
 ```bash
-python -m dqmonitor serve --host 0.0.0.0 --port 8000
+python -m dqmonitor serve
+python -m dqmonitor serve --host 127.0.0.1 --port 8000
 python -m dqmonitor run-once --config config/rules.yaml
 ```
 
-`DQ_CONFIG` overrides the config path. `HOST` and `PORT` override the bind address.
+`serve` binds to `127.0.0.1` unless `HOST` or `--host` says otherwise. Use `--host 0.0.0.0` only when the machine should accept connections from other hosts. `DQ_CONFIG` overrides the config path. `PORT` overrides the port.
 
 Paths inside the YAML are relative to the working directory. Run the commands above from the project root so `data/sample` and `sqlite:///data/monitor.db` resolve correctly.
 
@@ -100,7 +101,7 @@ docker compose up --build -d
 docker compose logs -f
 ```
 
-The service listens on port 8000 and restarts unless you stop it. Stop it with:
+The service listens on port 8000 and restarts unless you stop it. Compose publishes that port on `127.0.0.1` only. Stop it with:
 
 ```bash
 docker compose down
@@ -112,8 +113,11 @@ Compose mounts `./config` and `./data`. Drop a new `orders*.csv` or `customers*.
 
 ```bash
 docker build -t dqmonitor .
-docker run --rm -p 8000:8000 -v "$(pwd)/data:/app/data" -v "$(pwd)/config:/app/config:ro" dqmonitor
+docker run --rm -p 127.0.0.1:8000:8000 --user "$(id -u):$(id -g)" \
+  -v "$(pwd)/data:/app/data" -v "$(pwd)/config:/app/config:ro" dqmonitor
 ```
+
+The image runs as a non-root user. `--user` keeps a bind-mounted `./data` writable by your account. The process inside the container still binds `0.0.0.0` so the published port reaches it.
 
 ## Configuration
 
@@ -154,7 +158,10 @@ Environment variables:
 | `LOG_LEVEL` | `DEBUG`, `INFO`, `WARNING`, `ERROR`, or `CRITICAL` |
 | `DQ_SMTP_PASSWORD` | SMTP password when email uses a username |
 | `DQ_WEBHOOK_TOKEN` | Bearer token when `bearer_token_env` points at it |
-| `HOST`, `PORT` | Bind address for `serve` |
+| `DQ_ENV` | `production` forces the log level off `DEBUG` |
+| `DQ_RATE_LIMIT` | Read requests allowed per minute per client (default 240) |
+| `DQ_RUN_RATE_LIMIT` | `POST /quality/run` calls allowed per minute per client (default 6) |
+| `HOST`, `PORT` | Bind address for `serve`. Default host is `127.0.0.1` |
 
 ## Add a check without changing code
 
@@ -366,6 +373,27 @@ python -m dqmonitor run-once
 
 The row-count rule compares with the previous run. Deleting this small file drops the count by less than the 30% limit, so that rule stays passing.
 
+## Security notes
+
+This service has no login. Keep it off untrusted networks. The local server binds to `127.0.0.1`. Docker Compose publishes port 8000 on `127.0.0.1` only. CORS is not enabled, so a browser on another origin cannot read the API.
+
+Secrets:
+
+- Copy `.env.example` to `.env` and replace the dummy values. `.env` is gitignored and is not copied into the image.
+- Load it locally with `set -a && source .env && set +a`. Compose passes `.env` into the container when the file exists.
+- `DQ_SMTP_PASSWORD` and `DQ_WEBHOOK_TOKEN` are read from the environment. Do not put passwords, tokens, or `Authorization` headers in `config/rules.yaml`, Docker files, or source code.
+- Set `bearer_token_env` when a webhook needs a bearer token.
+
+`data/monitor.db` holds check results on the machine. It is gitignored. New SQLite files are mode `0600`.
+
+Unexpected API failures return `Internal server error` with no stack trace and no filesystem path. Logs redact bearer tokens, URL userinfo, and `password=` / `token=` assignments. `DQ_ENV=production` (set in the image) keeps the log level at INFO when the config asks for DEBUG.
+
+Reads are limited to 240 per minute per client address, and manual runs to 6 per minute. Both limits are per process. `DQ_RATE_LIMIT` and `DQ_RUN_RATE_LIMIT` change them.
+
+Check dependencies for known vulnerabilities with `scripts/audit-deps.sh`. That installs `pip-audit` and scans the pinned requirement files. `python -m pip install safety && safety check -r requirements.txt` is an alternative.
+
+Do not set `FASTAPI_OTEL_AUTO_CONFIGURE` unless the collector is yours. Exported traces can include request paths.
+
 ## Troubleshooting
 
 - **Config error on startup.** The message names the YAML key. Unknown rule parameters, unknown types, and unknown sources are rejected before the server listens.
@@ -373,7 +401,7 @@ The row-count rule compares with the previous run. Deleting this small file drop
 - **Schedule edit did nothing.** Restart the process. Rule edits do not need a restart.
 - **SQLite is locked.** The store uses WAL mode and a 30 second busy timeout. Keep a single monitor process pointed at a given `monitor.db`.
 - **Email or webhook did not send.** The channel must be `enabled: true`, and the password or bearer environment variable must be set. Delivery errors are logged and the check result is still stored.
-- **Docker cannot write `data/monitor.db`.** The compose file mounts `./data`. The directory needs to be writable by the container.
+- **Docker cannot write `data/monitor.db`.** The process is not root. Compose runs as `UID:GID`, default `1000:1000`. Export `UID` and `GID` when your account is different, and make `./data` writable by that user.
 
 ## Sample data
 

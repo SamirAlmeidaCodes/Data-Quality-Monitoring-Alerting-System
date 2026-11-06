@@ -147,6 +147,13 @@ def test_missing_file(tmp_path):
         load_application(tmp_path / "missing.yaml")
 
 
+def test_production_disables_debug_logging(tmp_path, monkeypatch):
+    monkeypatch.setenv("DQ_ENV", "production")
+    path = tmp_path / "rules.yaml"
+    path.write_text("logging:\n  level: DEBUG\n", encoding="utf-8")
+    assert load_application(path).settings.logging.level == "INFO"
+
+
 def test_database_url_env_override(tmp_path, monkeypatch):
     path = tmp_path / "rules.yaml"
     path.write_text("storage:\n  url: sqlite:///data/monitor.db\n", encoding="utf-8")

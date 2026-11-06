@@ -1,8 +1,57 @@
-venv/
-.venv/
+# Secrets. .env.example is the only env file that belongs in git.
+.env
+.env.*
+!.env.example
+secrets/
+*.pem
+*.key
+*.p12
+*.pfx
+credentials.json
+
+# Python
 __pycache__/
-*.pyc
+*.py[cod]
 .pytest_cache/
-models/*.joblib
-data/*.csv
+.mypy_cache/
+.ruff_cache/
 .ipynb_checkpoints/
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# Virtual environments
+.venv/
+venv/
+
+# Local databases, WAL sidecars, and dropped CSV files.
+# Sample files under data/sample/ stay tracked.
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+data/*.csv
+
+# Logs
+logs/
+*.log
+
+# Coverage and local tool state
+.coverage
+.coverage.*
+htmlcov/
+
+# Large model artifacts
+*.gguf
+*.onnx
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+models/*.joblib
+models/*.pkl
+
+# OS
+.DS_Store

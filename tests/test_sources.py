@@ -6,6 +6,8 @@ import pandas as pd
 import pytest
 from sqlalchemy import create_engine
 
+from pydantic import ValidationError
+
 from dqmonitor.config_models import CsvFolderSourceConfig, SqliteSourceConfig
 from dqmonitor.errors import SourceError
 from dqmonitor.sources import load_source
@@ -55,6 +57,21 @@ def test_single_file_path(tmp_path):
     frame = load_source(_csv_source(path, pattern="ignored*.csv"))
     assert frame["order_id"].tolist() == [4]
     assert frame.attrs["dq_meta"]["mode"] == "file"
+
+
+def test_csv_pattern_cannot_leave_the_directory(tmp_path):
+    with pytest.raises(ValidationError, match="inside"):
+        _csv_source(tmp_path, pattern="../*.csv")
+
+
+def test_symlink_outside_the_directory_is_rejected(tmp_path):
+    outside = tmp_path / "secret.csv"
+    pd.DataFrame({"order_id": [1]}).to_csv(outside, index=False)
+    folder = tmp_path / "incoming"
+    folder.mkdir()
+    (folder / "link.csv").symlink_to(outside)
+    with pytest.raises(SourceError, match="outside"):
+        load_source(_csv_source(folder))
 
 
 def test_missing_folder_raises(tmp_path):

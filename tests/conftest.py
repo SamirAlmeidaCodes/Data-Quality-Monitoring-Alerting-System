@@ -19,6 +19,11 @@ def _isolated_env(monkeypatch):
         "DQ_CONFIG",
         "DQ_SMTP_PASSWORD",
         "DQ_WEBHOOK_TOKEN",
+        "DQ_ENV",
+        "DQ_RATE_LIMIT",
+        "DQ_RUN_RATE_LIMIT",
+        "HOST",
+        "PORT",
         "LOG_LEVEL",
     ):
         monkeypatch.delenv(name, raising=False)

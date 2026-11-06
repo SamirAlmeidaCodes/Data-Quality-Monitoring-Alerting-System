@@ -11,6 +11,7 @@ import httpx
 
 from dqmonitor.config_models import AlertingConfig, EmailConfig, WebhookConfig
 from dqmonitor.errors import AlertDeliveryError, ConfigError
+from dqmonitor.redact import redact
 from dqmonitor.reporting import check_to_dict
 from dqmonitor.storage import StoredCheck
 
@@ -68,9 +69,9 @@ class EmailAlerter:
             )
         payload = check_to_dict(check)
         message = EmailMessage()
-        message["Subject"] = f"[DQ {check.status.upper()}] {check.rule_name}"
-        message["From"] = self.config.from_addr
-        message["To"] = ", ".join(self.config.to_addrs)
+        message["Subject"] = _header_safe(f"[DQ {check.status.upper()}] {check.rule_name}")
+        message["From"] = _header_safe(self.config.from_addr)
+        message["To"] = _header_safe(", ".join(self.config.to_addrs))
         message.set_content(check.summary + "\n\n" + _pretty(payload))
         smtp_cls = smtplib.SMTP_SSL if self.config.use_ssl else smtplib.SMTP
         with smtp_cls(self.config.smtp_host, self.config.smtp_port, timeout=15) as smtp:
@@ -102,7 +103,7 @@ class WebhookAlerter:
             timeout=self.config.timeout_seconds,
         )
         response.raise_for_status()
-        logger.info("Sent webhook alert for %s to %s", check.rule_name, self.config.url)
+        logger.info("Sent webhook alert for %s to %s", check.rule_name, redact(self.config.url))
 
 
 def build_alerter(config: AlertingConfig) -> AlertRouter:
@@ -155,3 +156,9 @@ def _pretty(payload: dict) -> str:
     import json
 
     return json.dumps(payload, indent=2, sort_keys=True, default=str)
+
+
+def _header_safe(value: str) -> str:
+    """Drop CR and LF so a name cannot inject extra mail headers."""
+
+    return " ".join(value.replace("\r", " ").replace("\n", " ").split())

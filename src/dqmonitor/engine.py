@@ -13,6 +13,7 @@ import pandas as pd
 from dqmonitor.alerting import AlertRouter, build_alerter
 from dqmonitor.config import CompiledConfig, load_application
 from dqmonitor.errors import SourceError
+from dqmonitor.redact import public_error_message, redact
 from dqmonitor.rules.base import EvaluationContext, RuleResult
 from dqmonitor.sources import load_source
 from dqmonitor.storage import Store, StoredCheck, utcnow
@@ -87,8 +88,8 @@ class CheckEngine:
             return
         logger.warning(
             "Config storage url is %s but this process is using %s. Restart to switch databases.",
-            compiled.settings.storage.url,
-            self.store.url,
+            redact(compiled.settings.storage.url),
+            redact(self.store.url),
         )
         self._storage_warning_emitted = True
 
@@ -102,7 +103,7 @@ def execute_run(compiled: CompiledConfig, store: Store, alerter: AlertRouter) ->
         try:
             loaded[source.name] = load_source(source)
         except SourceError as exc:
-            logger.warning("Source %s could not be read: %s", source.name, exc)
+            logger.warning("Source %s could not be read: %s", source.name, redact(str(exc)))
             loaded[source.name] = exc
         except Exception as exc:
             logger.exception("Source %s could not be read", source.name)
@@ -180,10 +181,11 @@ def _evaluate_rule(
             details={},
         )
     elif isinstance(loaded, Exception):
+        safe = public_error_message(loaded)
         outcome = RuleResult(
             status="error",
-            summary=f"Source '{rule.source}' could not be read: {loaded}",
-            details={"error": str(loaded)},
+            summary=f"Source '{rule.source}' could not be read: {safe}",
+            details={"error_type": type(loaded).__name__, "error": safe},
         )
     else:
         frame = loaded
@@ -197,10 +199,11 @@ def _evaluate_rule(
             outcome = rule.evaluate(frame, context)
         except Exception as exc:
             logger.exception("Rule %s raised an exception", rule.name)
+            safe = public_error_message(exc)
             outcome = RuleResult(
                 status="error",
-                summary=f"Rule raised {type(exc).__name__}: {exc}",
-                details={"error": str(exc)},
+                summary=f"Rule raised {type(exc).__name__}: {safe}",
+                details={"error_type": type(exc).__name__, "error": safe},
             )
 
     details = dict(outcome.details)

@@ -1,5 +1,7 @@
 """Pydantic models for the YAML configuration."""
 
+import re
+from pathlib import PurePosixPath, PureWindowsPath
 from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -11,8 +13,21 @@ class StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+_ENV_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_SENSITIVE_HEADER = re.compile(
+    r"(?i)(authorization|api[-_]?key|token|secret|password|cookie)"
+)
+
+
+def _no_controls(value: str) -> str:
+    if any(ord(character) < 32 or ord(character) == 127 for character in value):
+        raise ValueError("must not contain control characters")
+    return value.strip()
+
+
 def _stripped(value: str) -> str:
-    value = value.strip()
+    value = _no_controls(value)
     if not value:
         raise ValueError("must not be empty")
     return value
@@ -45,7 +60,7 @@ class ScheduleConfig(StrictModel):
 
 
 class StorageConfig(StrictModel):
-    url: str = "sqlite:///data/monitor.db"
+    url: str = Field(default="sqlite:///data/monitor.db", max_length=2048)
 
     @field_validator("url")
     @classmethod
@@ -68,22 +83,79 @@ class LoggingConfig(StrictModel):
 
 class EmailConfig(StrictModel):
     enabled: bool = False
-    smtp_host: str = "localhost"
+    smtp_host: str = Field(default="localhost", max_length=255)
     smtp_port: int = Field(default=587, ge=1, le=65535)
-    username: str = ""
-    password_env: str = "DQ_SMTP_PASSWORD"
-    from_addr: str = "dq-monitor@localhost"
+    username: str = Field(default="", max_length=320)
+    password_env: str = Field(default="DQ_SMTP_PASSWORD", max_length=128)
+    from_addr: str = Field(default="dq-monitor@localhost", max_length=320)
     to_addrs: list[str] = Field(default_factory=list)
     use_tls: bool = True
     use_ssl: bool = False
 
+    @field_validator("smtp_host", "username", "from_addr")
+    @classmethod
+    def _text(cls, value: str) -> str:
+        return _no_controls(value)
+
+    @field_validator("password_env")
+    @classmethod
+    def _password_env(cls, value: str) -> str:
+        value = _stripped(value)
+        if not _ENV_NAME.fullmatch(value):
+            raise ValueError("password_env must be an environment variable name, not the password")
+        return value
+
+    @field_validator("to_addrs")
+    @classmethod
+    def _recipients(cls, value: list[str]) -> list[str]:
+        if len(value) > 50:
+            raise ValueError("to_addrs must contain at most 50 addresses")
+        cleaned = []
+        for item in value:
+            address = _stripped(item)
+            if len(address) > 320:
+                raise ValueError("email addresses must be at most 320 characters")
+            cleaned.append(address)
+        return cleaned
+
 
 class WebhookConfig(StrictModel):
     enabled: bool = False
-    url: str = ""
-    timeout_seconds: float = Field(default=10, gt=0)
+    url: str = Field(default="", max_length=2048)
+    timeout_seconds: float = Field(default=10, gt=0, le=120)
     headers: dict[str, str] = Field(default_factory=dict)
-    bearer_token_env: str = ""
+    bearer_token_env: str = Field(default="", max_length=128)
+
+    @field_validator("url")
+    @classmethod
+    def _url(cls, value: str) -> str:
+        return _no_controls(value)
+
+    @field_validator("bearer_token_env")
+    @classmethod
+    def _bearer_env(cls, value: str) -> str:
+        value = _no_controls(value)
+        if value and not _ENV_NAME.fullmatch(value):
+            raise ValueError("bearer_token_env must be an environment variable name")
+        return value
+
+    @field_validator("headers")
+    @classmethod
+    def _headers(cls, value: dict[str, str]) -> dict[str, str]:
+        if len(value) > 20:
+            raise ValueError("webhook headers must contain at most 20 entries")
+        cleaned: dict[str, str] = {}
+        for key, item in value.items():
+            name = _stripped(str(key))
+            header_value = _no_controls(str(item))
+            if len(name) > 128 or len(header_value) > 512:
+                raise ValueError("webhook header names and values are too long")
+            if _SENSITIVE_HEADER.search(name):
+                raise ValueError(
+                    "credential headers must not be stored in config; use bearer_token_env"
+                )
+            cleaned[name] = header_value
+        return cleaned
 
 
 class AlertingConfig(StrictModel):
@@ -109,17 +181,27 @@ class CsvFolderSourceConfig(StrictModel):
     Paths are relative to the process working directory.
     """
 
-    name: str
+    name: str = Field(max_length=200)
     type: Literal["csv_folder"]
-    path: str
-    pattern: str = "*.csv"
+    path: str = Field(max_length=4096)
+    pattern: str = Field(default="*.csv", max_length=255)
     mode: Literal["concat", "latest"] = "concat"
-    encoding: str = "utf-8"
+    encoding: str = Field(default="utf-8", max_length=64)
 
-    @field_validator("name", "path", "pattern", "encoding")
+    @field_validator("name", "path", "encoding")
     @classmethod
     def _non_empty(cls, value: str) -> str:
         return _stripped(value)
+
+    @field_validator("pattern")
+    @classmethod
+    def _pattern(cls, value: str) -> str:
+        value = _stripped(value)
+        posix = PurePosixPath(value).parts
+        windows = PureWindowsPath(value).parts
+        if value.startswith(("/", "\\")) or ".." in posix or ".." in windows:
+            raise ValueError("pattern must stay inside the source directory")
+        return value
 
 
 class SqliteSourceConfig(StrictModel):
@@ -128,15 +210,23 @@ class SqliteSourceConfig(StrictModel):
     ``url`` uses SQLAlchemy form, for example ``sqlite:///data/warehouse.db``.
     """
 
-    name: str
+    name: str = Field(max_length=200)
     type: Literal["sqlite"]
-    url: str
-    table: str
+    url: str = Field(max_length=2048)
+    table: str = Field(max_length=128)
 
-    @field_validator("name", "url", "table")
+    @field_validator("name", "url")
     @classmethod
     def _non_empty(cls, value: str) -> str:
         return _stripped(value)
+
+    @field_validator("table")
+    @classmethod
+    def _table(cls, value: str) -> str:
+        value = _stripped(value)
+        if not _IDENTIFIER.fullmatch(value):
+            raise ValueError(f"table name '{value}' is not a valid identifier")
+        return value
 
 
 SourceConfig = Annotated[
@@ -150,9 +240,9 @@ class RuleConfig(BaseModel):
 
     model_config = ConfigDict(extra="allow")
 
-    name: str
-    type: str
-    source: str
+    name: str = Field(max_length=200)
+    type: str = Field(max_length=100)
+    source: str = Field(max_length=200)
     enabled: bool = True
 
     @field_validator("name", "type", "source")
